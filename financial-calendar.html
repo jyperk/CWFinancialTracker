@@ -1,0 +1,1085 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cedarwood & Fire Financial Tracker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .calendar-grid {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 2px;
+            background: #e5e7eb;
+        }
+        .day-cell {
+            background: white;
+            min-height: 180px;
+            padding: 12px;
+            position: relative;
+            border-radius: 8px;
+            transition: transform 0.2s ease-in-out;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+        .day-cell:hover {
+            transform: translateY(-2px);
+        }
+        .day-cell.payday {
+            background: #dcfce7 !important;
+            border: 2px solid #16a34a;
+        }
+        .day-cell.other-month {
+            background: #f9fafb;
+            color: #9ca3af;
+        }
+        .expense-input {
+            width: 100%;
+            padding: 4px 6px;
+            margin: 2px 0;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            font-size: 12px;
+        }
+        .expense-input:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+            background: #eff6ff;
+        }
+        .day-number {
+            font-weight: bold;
+            font-size: 16px;
+            margin-bottom: 4px;
+        }
+        .balance-display {
+            font-size: 12px;
+            font-weight: 600;
+            color: #059669;
+            margin-bottom: 8px;
+        }
+        .balance-display.negative {
+            color: #dc2626;
+        }
+        .transaction-list {
+            max-height: 120px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 p-4">
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp, setLogLevel } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, getDocs, writeBatch, runTransaction, query } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+        
+        let db, auth, userId;
+        let currentDate = new Date();
+        let financialData = {};
+        let categories = [];
+        let unsubscribeListeners = [];
+
+        // Global variables provided by the Canvas environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        /**
+         * Initializes Firebase and sets up the user authentication.
+         * This function handles signing in with a custom token or anonymously if the token is not available.
+         */
+        async function initializeFirebase() {
+            try {
+                const firebaseApp = initializeApp(firebaseConfig);
+                auth = getAuth(firebaseApp);
+                db = getFirestore(firebaseApp);
+                
+                setLogLevel('debug');
+                
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+
+                onAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        document.getElementById('userIdDisplay').textContent = `User ID: ${userId.substring(0, 8)}...`;
+                        // Start listening to data once authenticated
+                        setupFirestoreListeners();
+                    } else {
+                        // User is signed out
+                        userId = null;
+                        document.getElementById('userIdDisplay').textContent = 'User not signed in';
+                        // Clear all listeners when signed out
+                        unsubscribeListeners.forEach(fn => fn());
+                        unsubscribeListeners = [];
+                    }
+                });
+            } catch (e) {
+                console.error("Error initializing Firebase:", e);
+                showMessageModal('Error', 'Failed to initialize Firebase. Please check your network connection.');
+            }
+        }
+
+        /**
+         * Sets up real-time listeners for categories and financial data.
+         * This function ensures the UI is always in sync with the database.
+         */
+        async function setupFirestoreListeners() {
+            // Unsubscribe existing listeners to avoid duplicates
+            unsubscribeListeners.forEach(fn => fn());
+            unsubscribeListeners = [];
+
+            // Listen for changes to the categories document
+            const categoriesDocRef = doc(db, `/artifacts/${appId}/users/${userId}/categories/userCategories`);
+            const unsubscribeCategories = onSnapshot(categoriesDocRef, (docSnap) => {
+                if (docSnap.exists() && docSnap.data().categories) {
+                    categories = docSnap.data().categories;
+                } else {
+                    categories = [
+                        { category: 'Deposits', subcategory: 'Social Security' },
+                        { category: 'Deposits', subcategory: 'Lanny' },
+                        { category: 'Credit Cards', subcategory: 'Chase' },
+                        { category: 'Credit Cards', subcategory: 'Discover - Wayne' },
+                        { category: 'Utilities', subcategory: 'TXU' },
+                        { category: 'Utilities', subcategory: 'Atmos' },
+                        { category: 'Insurance', subcategory: 'State Farm' },
+                        { category: 'Credit Cards', subcategory: 'Comenity' },
+                        { category: 'Credit Cards', subcategory: 'Amazon' },
+                        { category: 'Credit Cards', subcategory: 'Synchrocity - Care Credit' },
+                        { category: 'Credit Cards', subcategory: 'Credit One - 5x' },
+                        { category: 'Credit Cards', subcategory: 'Credit One - Nascar' },
+                        { category: 'Credit Cards', subcategory: 'RBFCU' },
+                        { category: 'Utilities', subcategory: 'City of Palestine' },
+                        { category: 'Utilities', subcategory: 'Zito' },
+                        { category: 'Utilities', subcategory: 'Mint - Joan' },
+                        { category: 'Utilities', subcategory: 'Mint - Wayne' },
+                        { category: 'Taxes', subcategory: 'Anderson County Property Tax' },
+                        { category: 'Loans', subcategory: 'Affirm - Air Conditioner' }
+                    ];
+                }
+                updateCategoryTable();
+                generateCalendar();
+            }, (error) => {
+                console.error("Error listening to categories:", error);
+                showMessageModal('Data Error', 'Failed to load categories. Please try refreshing the page.');
+            });
+            unsubscribeListeners.push(unsubscribeCategories);
+
+            // Fetch the current month's document to check if a beginning balance exists
+            const monthKey = `${currentDate.getFullYear()}-${currentDate.getMonth()}`;
+            const financialDocRef = doc(db, `/artifacts/${appId}/users/${userId}/financialData/${monthKey}`);
+            const financialDocSnap = await getDoc(financialDocRef);
+
+            // Only set beginning balance automatically if it's a new month with no existing data
+            if (!financialDocSnap.exists() || financialDocSnap.data().beginningBalance === undefined) {
+                const previousMonthBalance = await getPreviousMonthBalance();
+                await setDoc(financialDocRef, { beginningBalance: previousMonthBalance }, { merge: true });
+            }
+
+            // Listen for changes to the current month's financial data
+            const unsubscribeFinancial = onSnapshot(financialDocRef, (docSnap) => {
+                const data = docSnap.data();
+                if (data) {
+                    financialData = data.dailyData || {};
+                    // Use the balance from the document if it exists, otherwise default to 0
+                    document.getElementById('beginningBalance').value = data.beginningBalance !== undefined ? data.beginningBalance : 0;
+                } else {
+                    financialData = {};
+                    document.getElementById('beginningBalance').value = 0;
+                }
+                generateCalendar();
+                updateAllBalances();
+            }, (error) => {
+                console.error("Error listening to financial data:", error);
+                showMessageModal('Data Error', 'Failed to load financial data for this month. Please try refreshing the page.');
+            });
+            unsubscribeListeners.push(unsubscribeFinancial);
+        }
+        
+        /**
+         * Calculates the final balance of the previous month.
+         * @returns {number} The final balance of the previous month.
+         */
+        async function getPreviousMonthBalance() {
+            const tempDate = new Date(currentDate);
+            tempDate.setMonth(tempDate.getMonth() - 1);
+            const prevMonthKey = `${tempDate.getFullYear()}-${tempDate.getMonth()}`;
+            const prevFinancialDocRef = doc(db, `/artifacts/${appId}/users/${userId}/financialData/${prevMonthKey}`);
+            const docSnap = await getDoc(prevFinancialDocRef);
+
+            if (docSnap.exists()) {
+                const data = docSnap.data();
+                const dailyData = data.dailyData || {};
+                let runningBalance = data.beginningBalance || 0;
+                const prevMonth = tempDate.getMonth();
+                
+                const prevMonthDays = new Date(tempDate.getFullYear(), prevMonth + 1, 0).getDate();
+                for (let day = 1; day <= prevMonthDays; day++) {
+                    const dateKey = `${tempDate.getFullYear()}-${prevMonth}-${day}`;
+                    const dayData = dailyData[dateKey];
+                    if (dayData) {
+                        dayData.transactions.forEach(transaction => {
+                            const amount = parseFloat(transaction.amount);
+                            const isDeposit = transaction.category === 'Deposits';
+                            if (isDeposit) {
+                                runningBalance += amount;
+                            } else {
+                                runningBalance -= amount;
+                            }
+                        });
+                    }
+                }
+                return runningBalance;
+            }
+            return 0;
+        }
+
+        const monthNames = [
+            'January', 'February', 'March', 'April', 'May', 'June',
+            'July', 'August', 'September', 'October', 'November', 'December'
+        ];
+
+        function getFirstFridayAfterFirstWednesday(year, month) {
+            let firstWednesday = null;
+            for (let day = 1; day <= 7; day++) {
+                const date = new Date(year, month, day);
+                if (date.getDay() === 3) {
+                    firstWednesday = day;
+                    break;
+                }
+            }
+            if (!firstWednesday) return null;
+            let payday = firstWednesday + 2;
+            const lastDayOfMonth = new Date(year, month + 1, 0).getDate();
+            if (payday > lastDayOfMonth) {
+                return null;
+            }
+            return payday;
+        }
+
+        function generateCalendar() {
+            const year = currentDate.getFullYear();
+            const month = currentDate.getMonth();
+            document.getElementById('monthYear').textContent = `${monthNames[month]} ${year}`;
+            
+            const firstDay = new Date(year, month, 1);
+            const startDate = new Date(firstDay);
+            startDate.setDate(startDate.getDate() - firstDay.getDay());
+            
+            const payday = getFirstFridayAfterFirstWednesday(year, month);
+            
+            const grid = document.getElementById('calendarGrid');
+            grid.innerHTML = '';
+            
+            for (let week = 0; week < 6; week++) {
+                for (let day = 0; day < 7; day++) {
+                    const cellDate = new Date(startDate);
+                    cellDate.setDate(startDate.getDate() + (week * 7) + day);
+                    
+                    const cell = document.createElement('div');
+                    cell.className = 'day-cell';
+                    
+                    const isCurrentMonth = cellDate.getMonth() === month;
+                    const dayNumber = cellDate.getDate();
+                    const dateKey = `${cellDate.getFullYear()}-${cellDate.getMonth()}-${dayNumber}`;
+                    
+                    if (!isCurrentMonth) {
+                        cell.classList.add('other-month');
+                    }
+                    
+                    if (isCurrentMonth && dayNumber === payday) {
+                        cell.classList.add('payday');
+                    }
+                    
+                    const dayData = financialData[dateKey] || { transactions: [] };
+                    
+                    let transactionsHtml = '<div class="transaction-list mt-2 space-y-2">';
+                    dayData.transactions.forEach((transaction, index) => {
+                        const amountColor = transaction.category === 'Deposits' ? 'text-green-600' : 'text-red-600';
+                        transactionsHtml += `
+                            <div class="flex justify-between items-center text-xs">
+                                <span class="truncate">${transaction.category} - ${transaction.subcategory}</span>
+                                <span class="font-bold ${amountColor}">$${parseFloat(transaction.amount).toFixed(2)}</span>
+                                <button onclick="removeTransaction('${dateKey}', ${index})" class="text-gray-400 hover:text-red-500 transition-colors">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                                        <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
+                                    </svg>
+                                </button>
+                            </div>
+                        `;
+                    });
+                    transactionsHtml += '</div>';
+
+                    cell.innerHTML = `
+                        <div class="day-number">${dayNumber}</div>
+                        <div class="balance-display" id="balance-${dateKey}">$0.00</div>
+                        ${transactionsHtml}
+                        <button onclick="showTransactionModal('${dateKey}')" class="mt-auto flex items-center justify-center p-2 rounded-full bg-blue-500 text-white hover:bg-blue-600 transition-colors">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                <path fill-rule="evenodd" d="M10 5a1 1 0 011 1v3h3a1 1 0 110 2h-3v3a1 1 0 11-2 0v-3H6a1 1 0 110-2h3V6a1 1 0 011-1z" clip-rule="evenodd" />
+                            </svg>
+                        </button>
+                    `;
+                    
+                    grid.appendChild(cell);
+                }
+            }
+            updateAllBalances();
+        }
+
+        let currentDayKey = null;
+
+        function showTransactionModal(dateKey) {
+            currentDayKey = dateKey;
+            
+            const categorySelect = document.getElementById('transactionCategorySelect');
+            categorySelect.innerHTML = '<option value="">Select Category...</option>';
+            
+            const uniqueCategories = [...new Set(categories.map(cat => cat.category))];
+            uniqueCategories.forEach(categoryName => {
+                const subcategories = categories.filter(c => c.category === categoryName);
+                if (subcategories.length > 0) {
+                    subcategories.forEach(subcat => {
+                        const option = document.createElement('option');
+                        option.value = `${categoryName}|${subcat.subcategory}`;
+                        option.textContent = `${categoryName} - ${subcat.subcategory}`;
+                        categorySelect.appendChild(option);
+                    });
+                } else {
+                    const option = document.createElement('option');
+                    option.value = `${categoryName}|`;
+                    option.textContent = categoryName;
+                    categorySelect.appendChild(option);
+                }
+            });
+
+            document.getElementById('transactionModal').classList.remove('hidden');
+            document.getElementById('transactionModal').classList.add('flex');
+            document.getElementById('transactionAmountInput').focus();
+        }
+
+        function closeTransactionModal() {
+            document.getElementById('transactionModal').classList.add('hidden');
+            document.getElementById('transactionModal').classList.remove('flex');
+            document.getElementById('transactionAmountInput').value = '';
+            document.getElementById('transactionCategorySelect').value = '';
+        }
+
+        async function saveTransaction() {
+            if (!userId) {
+                showMessageModal('Authentication Required', 'Please wait for authentication to complete before saving data.');
+                return;
+            }
+
+            const categoryValue = document.getElementById('transactionCategorySelect').value;
+            const amount = parseFloat(document.getElementById('transactionAmountInput').value);
+
+            if (!categoryValue || isNaN(amount)) {
+                showMessageModal('Input Error', 'Please select a category and enter a valid amount.');
+                return;
+            }
+
+            const [category, subcategory] = categoryValue.split('|');
+
+            const transaction = {
+                category: category,
+                subcategory: subcategory,
+                amount: amount,
+                timestamp: new Date().toISOString()
+            };
+
+            const monthKey = `${currentDate.getFullYear()}-${currentDate.getMonth()}`;
+            const financialDocRef = doc(db, `/artifacts/${appId}/users/${userId}/financialData/${monthKey}`);
+
+            try {
+                const docSnap = await getDoc(financialDocRef);
+                const dataToUpdate = docSnap.exists() ? docSnap.data() : { dailyData: {} };
+
+                dataToUpdate.dailyData = dataToUpdate.dailyData || {};
+                dataToUpdate.dailyData[currentDayKey] = dataToUpdate.dailyData[currentDayKey] || { transactions: [] };
+                dataToUpdate.dailyData[currentDayKey].transactions.push(transaction);
+
+                await setDoc(financialDocRef, dataToUpdate);
+
+                closeTransactionModal();
+            } catch (e) {
+                console.error("Error saving transaction:", e);
+                showMessageModal('Save Failed', 'An error occurred while saving your transaction.');
+            }
+        }
+
+        async function removeTransaction(dateKey, index) {
+            if (!userId) return;
+
+            const monthKey = `${currentDate.getFullYear()}-${currentDate.getMonth()}`;
+            const financialDocRef = doc(db, `/artifacts/${appId}/users/${userId}/financialData/${monthKey}`);
+            
+            try {
+                const docSnap = await getDoc(financialDocRef);
+                if (docSnap.exists()) {
+                    const dataToUpdate = docSnap.data();
+                    const dayData = dataToUpdate.dailyData[dateKey];
+                    if (dayData && dayData.transactions) {
+                        dayData.transactions.splice(index, 1);
+                        await setDoc(financialDocRef, dataToUpdate);
+                    }
+                }
+            } catch (e) {
+                console.error("Error removing transaction:", e);
+                showMessageModal('Delete Failed', 'An error occurred while removing the transaction.');
+            }
+        }
+
+        async function updateBeginningBalance() {
+            if (!userId) return;
+            const monthKey = `${currentDate.getFullYear()}-${currentDate.getMonth()}`;
+            const financialDocRef = doc(db, `/artifacts/${appId}/users/${userId}/financialData/${monthKey}`);
+            const beginningBalance = parseFloat(document.getElementById('beginningBalance').value) || 0;
+            try {
+                await setDoc(financialDocRef, { beginningBalance }, { merge: true });
+            } catch (e) {
+                console.error("Error updating beginning balance:", e);
+                showMessageModal('Update Failed', 'Could not save the beginning balance.');
+            }
+        }
+        
+        function updateAllBalances() {
+            const beginningBalance = parseFloat(document.getElementById('beginningBalance').value) || 0;
+            const year = currentDate.getFullYear();
+            const month = currentDate.getMonth();
+            
+            let runningBalance = beginningBalance;
+            let totals = {};
+            
+            categories.forEach(cat => totals[cat.category] = (totals[cat.category] || 0));
+            
+            for (let day = 1; day <= 31; day++) {
+                const testDate = new Date(year, month, day);
+                if (testDate.getMonth() !== month) break;
+                
+                const dateKey = `${year}-${month}-${day}`;
+                
+                const dayData = financialData[dateKey];
+                if (dayData && dayData.transactions) {
+                    dayData.transactions.forEach(transaction => {
+                        const amount = parseFloat(transaction.amount);
+                        const isDeposit = transaction.category === 'Deposits';
+                        if (isDeposit) {
+                            runningBalance += amount;
+                        } else {
+                            runningBalance -= amount;
+                        }
+                        totals[transaction.category] = (totals[transaction.category] || 0) + amount;
+                    });
+                }
+
+                // Update the balance display AFTER processing the day's transactions
+                const balanceElement = document.getElementById(`balance-${dateKey}`);
+                if (balanceElement) {
+                    balanceElement.textContent = `$${runningBalance.toFixed(2)}`;
+                    balanceElement.className = `balance-display ${runningBalance >= 0 ? '' : 'negative'}`;
+                }
+            }
+
+            const totalsGrid = document.getElementById('totalsGrid');
+            if (totalsGrid) {
+                totalsGrid.innerHTML = '';
+                
+                const finalBalanceCard = document.createElement('div');
+                finalBalanceCard.className = `text-center p-4 bg-blue-50 rounded-lg shadow-inner`;
+                finalBalanceCard.innerHTML = `
+                    <div class="text-sm text-blue-600 font-semibold">Final Balance</div>
+                    <div class="text-xl font-bold ${runningBalance >= 0 ? 'text-blue-700' : 'text-red-700'}">$${runningBalance.toFixed(2)}</div>
+                `;
+                totalsGrid.appendChild(finalBalanceCard);
+                
+                for (const category in totals) {
+                    const totalCard = document.createElement('div');
+                    const isDeposit = category === 'Deposits';
+                    const totalColor = isDeposit ? 'green' : 'red';
+                    totalCard.className = `text-center p-4 bg-${totalColor}-50 rounded-lg shadow-inner`;
+                    totalCard.innerHTML = `
+                        <div class="text-sm text-${totalColor}-600 font-semibold">${category}</div>
+                        <div class="text-xl font-bold text-${totalColor}-700">$${(totals[category] || 0).toFixed(2)}</div>
+                    `;
+                    totalsGrid.appendChild(totalCard);
+                }
+            }
+        }
+
+        function previousMonth() {
+            currentDate.setMonth(currentDate.getMonth() - 1);
+            setupFirestoreListeners();
+        }
+
+        function nextMonth() {
+            currentDate.setMonth(currentDate.getMonth() + 1);
+            setupFirestoreListeners();
+        }
+
+        function handleCategoryInput(event) {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                addCategory();
+            }
+        }
+        
+        let currentEditIndex = -1;
+
+        function showEditModal(index) {
+            currentEditIndex = index;
+            const item = categories[index];
+            document.getElementById('editCategoryInput').value = item.category;
+            document.getElementById('editSubcategoryInput').value = item.subcategory;
+            document.getElementById('editModal').classList.remove('hidden');
+            document.getElementById('editModal').classList.add('flex');
+            document.getElementById('editCategoryInput').focus();
+        }
+
+        function closeEditModal() {
+            document.getElementById('editModal').classList.add('hidden');
+            document.getElementById('editModal').classList.remove('flex');
+            currentEditIndex = -1;
+        }
+
+        async function saveEdit() {
+            if (currentEditIndex < 0 || !userId) return;
+            const newCategory = document.getElementById('editCategoryInput').value.trim();
+            const newSubcategory = document.getElementById('editSubcategoryInput').value.trim();
+            
+            if (!newCategory) {
+                return showMessageModal('Input Error', 'Category name cannot be empty.');
+            }
+
+            const updatedCategories = [...categories];
+            updatedCategories[currentEditIndex] = { category: newCategory, subcategory: newSubcategory };
+
+            try {
+                const categoriesDocRef = doc(db, `/artifacts/${appId}/users/${userId}/categories/userCategories`);
+                await setDoc(categoriesDocRef, { categories: updatedCategories });
+                closeEditModal();
+            } catch (e) {
+                console.error("Error editing category:", e);
+                showMessageModal('Update Error', 'Failed to update the category.');
+            }
+        }
+
+        function handleEditKeydown(event) {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                saveEdit();
+            } else if (event.key === 'Escape') {
+                event.preventDefault();
+                closeEditModal();
+            }
+        }
+        
+        async function addCategory() {
+            if (!userId) return showMessageModal('Error', 'User not authenticated.');
+
+            const categoryInput = document.getElementById('newCategory');
+            const subcategoryInput = document.getElementById('newSubcategory');
+            
+            const newCategory = categoryInput.value.trim();
+            const newSubcategory = subcategoryInput.value.trim();
+            
+            if (!newCategory) {
+                return showMessageModal('Input Required', 'Please enter a category name.');
+            }
+            
+            const newCategories = [...categories, { category: newCategory, subcategory: newSubcategory }];
+            
+            try {
+                const categoriesDocRef = doc(db, `/artifacts/${appId}/users/${userId}/categories/userCategories`);
+                await setDoc(categoriesDocRef, { categories: newCategories });
+                categoryInput.value = '';
+                subcategoryInput.value = '';
+                categoryInput.focus();
+            } catch (e) {
+                console.error("Error adding category:", e);
+                showMessageModal('Save Error', 'Failed to add the new category.');
+            }
+        }
+
+        let categoryToDeleteIndex = -1;
+
+        function showDeleteModal(index) {
+            categoryToDeleteIndex = index;
+            const item = categories[index];
+            document.getElementById('deleteItemName').textContent = `${item.category} - ${item.subcategory}`;
+            document.getElementById('deleteModal').classList.remove('hidden');
+            document.getElementById('deleteModal').classList.add('flex');
+        }
+
+        function closeDeleteModal() {
+            document.getElementById('deleteModal').classList.add('hidden');
+            document.getElementById('deleteModal').classList.remove('flex');
+            categoryToDeleteIndex = -1;
+        }
+
+        async function confirmDelete() {
+            if (!userId || categoryToDeleteIndex === -1) return;
+            
+            const newCategories = [...categories];
+            newCategories.splice(categoryToDeleteIndex, 1);
+            
+            try {
+                const categoriesDocRef = doc(db, `/artifacts/${appId}/users/${userId}/categories/userCategories`);
+                await setDoc(categoriesDocRef, { categories: newCategories });
+                closeDeleteModal();
+            } catch (e) {
+                console.error("Error deleting category:", e);
+                showMessageModal('Delete Failed', 'Could not delete the category.');
+            }
+        }
+        
+        function updateCategoryTable() {
+            const tbody = document.getElementById('categoryTable');
+            tbody.innerHTML = '';
+            
+            categories.forEach((item, index) => {
+                const row = document.createElement('tr');
+                row.className = index % 2 === 0 ? 'bg-white' : 'bg-gray-50';
+                
+                row.innerHTML = `
+                    <td class="border border-gray-300 p-3">${item.category}</td>
+                    <td class="border border-gray-300 p-3">${item.subcategory}</td>
+                    <td class="border border-gray-300 p-3 text-center">
+                        <button class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-lg text-sm mr-2 transition-colors"
+                                onclick="showEditModal(${index})">
+                            Edit
+                        </button>
+                        <button class="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-lg text-sm transition-colors"
+                                onclick="showDeleteModal(${index})">
+                            Delete
+                        </button>
+                    </td>
+                `;
+                
+                tbody.appendChild(row);
+            });
+        }
+
+        function showMessageModal(title, message) {
+            document.getElementById('messageTitle').textContent = title;
+            document.getElementById('messageText').textContent = message;
+            document.getElementById('messageModal').classList.remove('hidden');
+            document.getElementById('messageModal').classList.add('flex');
+        }
+
+        function closeMessageModal() {
+            document.getElementById('messageModal').classList.add('hidden');
+            document.getElementById('messageModal').classList.remove('flex');
+        }
+
+        function clearAllData() {
+            document.getElementById('clearAllModal').classList.remove('hidden');
+            document.getElementById('clearAllModal').classList.add('flex');
+        }
+
+        function closeClearAllModal() {
+            document.getElementById('clearAllModal').classList.add('hidden');
+            document.getElementById('clearAllModal').classList.remove('flex');
+        }
+
+        async function confirmClearAllData() {
+            if (!userId) return showMessageModal('Error', 'User not authenticated.');
+
+            try {
+                const batch = writeBatch(db);
+                
+                // Delete categories document
+                const categoriesDocRef = doc(db, `/artifacts/${appId}/users/${userId}/categories/userCategories`);
+                batch.delete(categoriesDocRef);
+
+                // Delete all financial data documents for the user
+                const financialCollectionRef = collection(db, `/artifacts/${appId}/users/${userId}/financialData`);
+                const querySnapshot = await getDocs(query(financialCollectionRef));
+                querySnapshot.forEach(docSnap => {
+                    batch.delete(docSnap.ref);
+                });
+                
+                await batch.commit();
+                closeClearAllModal();
+                showMessageModal('Success', 'All data has been cleared from the cloud and reset to defaults.');
+            } catch (e) {
+                console.error("Error clearing data:", e);
+                closeClearAllModal();
+                showMessageModal('Clear Failed', 'An error occurred while clearing your data.');
+            }
+        }
+        
+        async function exportData() {
+            if (!userId) {
+                return showMessageModal('Error', 'User not authenticated. Cannot export data.');
+            }
+            try {
+                // Fetch all data from Firestore
+                const categoriesDocRef = doc(db, `/artifacts/${appId}/users/${userId}/categories/userCategories`);
+                const categoriesSnap = await getDoc(categoriesDocRef);
+                
+                const financialDataCollectionRef = collection(db, `/artifacts/${appId}/users/${userId}/financialData`);
+                const financialDataSnapshot = await getDocs(query(financialDataCollectionRef));
+                const financialDataMap = {};
+                financialDataSnapshot.forEach(docSnap => {
+                    financialDataMap[docSnap.id] = docSnap.data();
+                });
+                
+                const data = {
+                    categories: categoriesSnap.exists() ? categoriesSnap.data().categories : [],
+                    financialData: financialDataMap,
+                    exportDate: new Date().toISOString()
+                };
+                
+                const dataStr = JSON.stringify(data, null, 2);
+                const dataBlob = new Blob([dataStr], {type: 'application/json'});
+                const url = URL.createObjectURL(dataBlob);
+                
+                const today = new Date();
+                const dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+                
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = `financial-calendar-backup-${dateStr}.json`;
+                link.style.display = 'none';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                
+                setTimeout(() => URL.revokeObjectURL(url), 100);
+                
+                showMessageModal('Export Success', `Data exported successfully! Look for: financial-calendar-backup-${dateStr}.json in your Downloads folder.`);
+            } catch (e) {
+                console.error("Error exporting data:", e);
+                showMessageModal('Export Failed', 'An error occurred while exporting your data.');
+            }
+        }
+
+        async function handleImportFile(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            const reader = new FileReader();
+            reader.onload = async function(e) {
+                try {
+                    const importedData = JSON.parse(e.target.result);
+                    
+                    if (!importedData.categories || !Array.isArray(importedData.categories)) {
+                        throw new Error('Invalid file format: categories not found');
+                    }
+                    if (!importedData.financialData || typeof importedData.financialData !== 'object') {
+                        throw new Error('Invalid file format: financial data not found');
+                    }
+                    
+                    document.getElementById('messageTitle').textContent = 'Confirm Import';
+                    document.getElementById('messageText').textContent = `Import data from ${importedData.exportDate ? new Date(importedData.exportDate).toLocaleDateString() : 'unknown date'}? This will replace all your current data.`;
+                    
+                    const okButton = document.getElementById('messageModal').querySelector('button');
+                    okButton.onclick = async () => {
+                        try {
+                            await importDataToFirestore(importedData);
+                            closeMessageModal();
+                            showMessageModal('Import Success', 'Data imported successfully!');
+                        } catch(error) {
+                            closeMessageModal();
+                            showMessageModal('Import Failed', 'Error importing to database: ' + error.message);
+                        }
+                    };
+                    
+                    const cancelButton = document.createElement('button');
+                    cancelButton.textContent = 'Cancel';
+                    cancelButton.className = 'px-4 py-2 bg-gray-300 hover:bg-gray-400 rounded-lg transition-colors mr-2';
+                    cancelButton.onclick = () => {
+                        closeMessageModal();
+                        showMessageModal('Import Canceled', 'The import operation was canceled.');
+                    };
+                    
+                    // Remove existing buttons and add new ones
+                    const modalFooter = okButton.parentNode;
+                    modalFooter.innerHTML = '';
+                    modalFooter.appendChild(cancelButton);
+                    modalFooter.appendChild(okButton);
+                    
+                    document.getElementById('messageModal').classList.remove('hidden');
+                    document.getElementById('messageModal').classList.add('flex');
+                    
+                } catch (error) {
+                    showMessageModal('Import Failed', 'Error importing file: ' + error.message + '\nPlease make sure you selected a valid backup file.');
+                }
+                event.target.value = '';
+            };
+            reader.readAsText(file);
+        }
+        
+        async function importDataToFirestore(data) {
+            if (!userId) throw new Error('User not authenticated.');
+
+            const batch = writeBatch(db);
+            const categoriesDocRef = doc(db, `/artifacts/${appId}/users/${userId}/categories/userCategories`);
+            batch.set(categoriesDocRef, { categories: data.categories });
+            
+            for (const monthKey in data.financialData) {
+                const financialDocRef = doc(db, `/artifacts/${appId}/users/${userId}/financialData/${monthKey}`);
+                batch.set(financialDocRef, data.financialData[monthKey]);
+            }
+            
+            await batch.commit();
+        }
+        
+        // Expose functions to the global scope for inline event handlers
+        window.previousMonth = previousMonth;
+        window.nextMonth = nextMonth;
+        window.updateBeginningBalance = updateBeginningBalance;
+        window.handleCategoryInput = handleCategoryInput;
+        window.addCategory = addCategory;
+        window.showEditModal = showEditModal;
+        window.closeEditModal = closeEditModal;
+        window.saveEdit = saveEdit;
+        window.handleEditKeydown = handleEditKeydown;
+        window.showDeleteModal = showDeleteModal;
+        window.closeDeleteModal = closeDeleteModal;
+        window.confirmDelete = confirmDelete;
+        window.clearAllData = clearAllData;
+        window.closeClearAllModal = closeClearAllModal;
+        window.confirmClearAllData = confirmClearAllData;
+        window.exportData = exportData;
+        window.handleImportFile = handleImportFile;
+        window.showMessageModal = showMessageModal;
+        window.closeMessageModal = closeMessageModal;
+        window.showTransactionModal = showTransactionModal;
+        window.closeTransactionModal = closeTransactionModal;
+        window.saveTransaction = saveTransaction;
+        window.removeTransaction = removeTransaction;
+
+        // Initialize Firebase when the DOM is ready
+        document.addEventListener('DOMContentLoaded', () => {
+            initializeFirebase();
+        });
+    </script>
+
+    <div class="max-w-7xl mx-auto space-y-6">
+        <!-- Main Header with Logo -->
+        <div class="bg-white rounded-lg shadow-xl p-6 flex items-center justify-between">
+            <div class="flex items-center space-x-4">
+                <!-- Replace this URL with your logo's URL -->
+                <img src="	https://i.etsystatic.com/48363419/r/isla/a9ecc3/67650174/isla_200x200.67650174_6pwm54l8.jpg" alt="Business Logo" class="w-16 h-16 rounded-full shadow-md">
+                <div class="text-2xl font-bold text-gray-800">Financial Tracker</div>
+            </div>
+            <div class="text-right">
+                 <div class="flex justify-end items-center mb-4 space-x-4">
+                    <button onclick="previousMonth()" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg shadow-md transition-all">
+                        ← Previous
+                    </button>
+                    <div class="text-center">
+                        <h1 id="monthYear" class="text-3xl font-bold text-gray-800"></h1>
+                        <span id="userIdDisplay" class="text-xs text-gray-500 font-mono"></span>
+                    </div>
+                    <button onclick="nextMonth()" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg shadow-md transition-all">
+                        Next →
+                    </button>
+                </div>
+                <div class="flex flex-col md:flex-row items-center gap-4 mt-4 justify-end">
+                    <label class="font-semibold text-gray-700">Beginning Balance:</label>
+                    <input type="number" id="beginningBalance" value="0" step="0.01"
+                        class="px-3 py-2 border border-gray-300 rounded-md w-full md:w-auto focus:ring-2 focus:ring-blue-500"
+                        onchange="updateBeginningBalance()">
+                </div>
+            </div>
+        </div>
+
+        <!-- Calendar -->
+        <div class="bg-white rounded-lg shadow-xl p-6">
+            <!-- Day Headers -->
+            <div class="calendar-grid mb-1 text-xs sm:text-base font-semibold">
+                <div class="bg-gray-800 text-white p-3 text-center rounded-tl-lg">Sunday</div>
+                <div class="bg-gray-800 text-white p-3 text-center">Monday</div>
+                <div class="bg-gray-800 text-white p-3 text-center">Tuesday</div>
+                <div class="bg-gray-800 text-white p-3 text-center">Wednesday</div>
+                <div class="bg-gray-800 text-white p-3 text-center">Thursday</div>
+                <div class="bg-gray-800 text-white p-3 text-center">Friday</div>
+                <div class="bg-gray-800 text-white p-3 text-center rounded-tr-lg">Saturday</div>
+            </div>
+            
+            <!-- Calendar Days -->
+            <div id="calendarGrid" class="calendar-grid">
+                <!-- Days will be generated here -->
+            </div>
+        </div>
+
+        <!-- Category Management -->
+        <div class="bg-white rounded-lg shadow-xl p-6">
+            <h2 class="text-2xl font-bold mb-4 text-center text-gray-800">Category Management</h2>
+            
+            <!-- Data Management Section -->
+            <div class="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                <h3 class="font-bold text-blue-800 mb-2">Data Management Tools</h3>
+                <div class="flex flex-wrap gap-2">
+                    <button onclick="clearAllData()" class="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm transition-colors">
+                        Clear All Data
+                    </button>
+                    <button onclick="exportData()" class="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-lg text-sm transition-colors">
+                        Export Data
+                    </button>
+                    <input type="file" id="importFile" accept=".json" class="hidden" onchange="handleImportFile(event)">
+                    <button onclick="document.getElementById('importFile').click()" class="bg-purple-500 hover:bg-purple-600 text-white px-4 py-2 rounded-lg text-sm transition-colors">
+                        Import Data
+                    </button>
+                </div>
+            </div>
+            
+            <div class="overflow-x-auto">
+                <table class="min-w-full border-collapse border border-gray-300 rounded-lg overflow-hidden">
+                    <thead>
+                        <tr class="bg-gray-100">
+                            <th class="border border-gray-300 p-3 text-left font-bold text-gray-700">Category</th>
+                            <th class="border border-gray-300 p-3 text-left font-bold text-gray-700">Subcategory</th>
+                            <th class="border border-gray-300 p-3 text-center font-bold text-gray-700">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="categoryTable">
+                        <!-- Categories will be populated here -->
+                    </tbody>
+                    <tfoot>
+                        <tr>
+                            <td class="border border-gray-300 p-1">
+                                <input type="text" id="newCategory" placeholder="New Category"
+                                       class="w-full p-2 border-0 focus:ring-2 focus:ring-blue-500 rounded-md focus:outline-none"
+                                       onkeydown="handleCategoryInput(event)">
+                            </td>
+                            <td class="border border-gray-300 p-1">
+                                <input type="text" id="newSubcategory" placeholder="New Subcategory"
+                                       class="w-full p-2 border-0 focus:ring-2 focus:ring-blue-500 rounded-md focus:outline-none"
+                                       onkeydown="handleCategoryInput(event)">
+                            </td>
+                            <td class="border border-gray-300 p-1 text-center">
+                                <button onclick="addCategory()"
+                                        class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm transition-colors shadow-md">
+                                    Add
+                                </button>
+                            </td>
+                        </tr>
+                    </tfoot>
+                </table>
+            </div>
+            
+            <div class="mt-4 text-sm text-gray-600">
+                <p><strong>Instructions:</strong></p>
+                <ul class="list-disc list-inside space-y-1">
+                    <li>Use <kbd class="bg-gray-200 px-2 py-1 rounded-md font-mono">Enter</kbd> to add a category and move to the next line.</li>
+                    <li>Use <kbd class="bg-gray-200 px-2 py-1 rounded-md font-mono">Tab</kbd> to move between input fields.</li>
+                    <li>Your custom categories will appear in the calendar dropdowns.</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Totals -->
+        <div class="bg-white rounded-lg shadow-xl p-6">
+            <h2 class="text-2xl font-bold mb-4 text-center text-gray-800">Monthly Totals</h2>
+            <div id="totalsGrid" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
+                <!-- Totals will be dynamically generated here -->
+            </div>
+        </div>
+
+        <!-- Legend -->
+        <div class="bg-white rounded-lg shadow-xl p-4">
+            <div class="flex flex-col sm:flex-row items-center justify-center gap-6 text-sm">
+                <div class="flex items-center gap-2">
+                    <div class="w-4 h-4 bg-green-200 border-2 border-green-500 rounded"></div>
+                    <span>Payday (1st Friday after 1st Wednesday)</span>
+                </div>
+                <div class="text-gray-600 text-center">
+                    💡 Tip: Click the **+** button to add transactions
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Custom Modal for Alerts/Messages -->
+    <div id="messageModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-white rounded-lg p-6 w-96 max-w-[90vw] shadow-2xl">
+            <h3 id="messageTitle" class="text-lg font-bold mb-4"></h3>
+            <p id="messageText" class="mb-6"></p>
+            <div class="flex justify-end">
+                <button onclick="closeMessageModal()" class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors shadow-md">
+                    OK
+                </button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Custom Modal for Transaction -->
+    <div id="transactionModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-white rounded-lg p-6 w-96 max-w-[90vw] shadow-2xl">
+            <h3 class="text-lg font-bold mb-4">Add Transaction</h3>
+            <div class="mb-4">
+                <label for="transactionCategorySelect" class="block text-sm font-medium mb-2">Category:</label>
+                <select id="transactionCategorySelect" class="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500">
+                    <option value="">Select Category...</option>
+                </select>
+            </div>
+            <div class="mb-6">
+                <label for="transactionAmountInput" class="block text-sm font-medium mb-2">Amount:</label>
+                <input type="number" id="transactionAmountInput" class="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500">
+            </div>
+            <div class="flex gap-3 justify-end">
+                <button onclick="closeTransactionModal()" class="px-4 py-2 bg-gray-300 hover:bg-gray-400 rounded-lg transition-colors">Cancel</button>
+                <button onclick="saveTransaction()" class="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors">Save Transaction</button>
+            </div>
+        </div>
+    </div>
+
+
+    <!-- Custom Modal for Edit Category -->
+    <div id="editModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-white rounded-lg p-6 w-96 max-w-90vw">
+            <h3 class="text-lg font-bold mb-4">Edit Category</h3>
+            <div class="mb-4">
+                <label class="block text-sm font-medium mb-2">Category:</label>
+                <input type="text" id="editCategoryInput" class="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500" onkeydown="handleEditKeydown(event)">
+            </div>
+            <div class="mb-6">
+                <label class="block text-sm font-medium mb-2">Subcategory:</label>
+                <input type="text" id="editSubcategoryInput" class="w-full px-3 py-2 border border-gray-300 rounded focus:ring-2 focus:ring-blue-500" onkeydown="handleEditKeydown(event)">
+            </div>
+            <div class="flex gap-3 justify-end">
+                <button onclick="closeEditModal()" class="px-4 py-2 bg-gray-300 hover:bg-gray-400 rounded">Cancel</button>
+                <button onclick="saveEdit()" class="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Custom Modal for Delete Confirmation -->
+    <div id="deleteModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-white rounded-lg p-6 w-96 max-w-[90vw] shadow-2xl">
+            <h3 class="text-lg font-bold mb-4">Delete Category</h3>
+            <p class="mb-6">Are you sure you want to delete "<span id="deleteItemName" class="font-semibold"></span>"?</p>
+            <div class="flex gap-3 justify-end">
+                <button onclick="closeDeleteModal()" class="px-4 py-2 bg-gray-300 hover:bg-gray-400 rounded-lg transition-colors">Cancel</button>
+                <button onclick="confirmDelete()" class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Custom Modal for Clear All Data Confirmation -->
+    <div id="clearAllModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-white rounded-lg p-6 w-96 max-w-[90vw] shadow-2xl">
+            <h3 class="text-lg font-bold mb-4 text-red-700">Clear All Data</h3>
+            <p class="mb-6">Are you absolutely sure you want to clear **ALL** your saved financial data? This action cannot be undone and will delete all your entries from the cloud.</p>
+            <div class="flex gap-3 justify-end">
+                <button onclick="closeClearAllModal()" class="px-4 py-2 bg-gray-300 hover:bg-gray-400 rounded-lg transition-colors">Cancel</button>
+                <button onclick="confirmClearAllData()" class="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors">Clear All</button>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
